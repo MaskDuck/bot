@@ -191,7 +191,6 @@ class VoiceGate(Cog):
                 await ctx.channel.send(ctx.author.mention, embed=embed)
             return
 
-        self.mod_log.ignore(Event.member_update, ctx.author.id)
         embed = disnake.Embed(
             title="Voice gate passed",
             description="You have been granted permission to use voice channels in Python Discord.",
