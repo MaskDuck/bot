@@ -1,51 +1,48 @@
 import asyncio
-import socket
 
 import aiohttp
+import discord
 
 import bot
-from bot import api, constants
-from bot.async_stats import AsyncStatsClient
-from bot.bot import Bot, StartupError
+from bot import constants
+from bot.bot import Bot
 from bot.log import get_logger, setup_sentry
+from botcore import StartupError
 
 setup_sentry()
 LOCALHOST = "127.0.0.1"
 
 
-async def main(bot: Bot) -> None:
+async def main() -> None:
     """Entry Async method for starting the bot."""
-    statsd_url = constants.Stats.statsd_host
-    if constants.DEBUG_MODE:
-        # Since statsd is UDP, there are no errors for sending to a down port.
-        # For this reason, setting the statsd host to 127.0.0.1 for development
-        # will effectively disable stats.
-        statsd_url = LOCALHOST
-    bot._resolver = aiohttp.AsyncResolver()
-    bot._connector = aiohttp.TCPConnector(
-        resolver=bot._resolver,
-        family=socket.AF_INET,
-    )
-    bot.http.connector = bot._connector
-    async with aiohttp.ClientSession(connector=bot._connector) as session:
-        async with bot:
-            bot.http_session = session
+    allowed_roles = list({discord.Object(id_) for id_ in constants.MODERATION_ROLES})
 
-            bot._connect_statsd(statsd_url)
-            bot.stats = AsyncStatsClient(asyncio.get_running_loop(), LOCALHOST)
+    intents = discord.Intents.all()
+    intents.presences = False
+    intents.dm_typing = False
+    intents.dm_reactions = False
+    intents.invites = False
+    intents.webhooks = False
+    intents.integrations = False
 
-            bot.api_client = api.APIClient(connector=bot._connector)
-            try:
-                await bot.ping_services()
-            except Exception as e:
-                raise StartupError(e)
-            bot._guild_available = asyncio.Event()
-            await bot.start(constants.Bot.token)
+    bot.instance = await Bot.create(allowed_roles, intents)
 
+    async with aiohttp.ClientSession(connector=bot.instance._connector) as session:
+        async with bot.instance:
+            bot.instance.http_session = session
+
+            statsd_url = constants.Stats.statsd_host
+            if constants.DEBUG_MODE:
+                # Since statsd is UDP, there are no errors for sending to a down port.
+                # For this reason, setting the statsd host to 127.0.0.1 for development
+                # will effectively disable stats.
+                statsd_url = LOCALHOST
+            bot.instance.statsd_url = statsd_url
+
+            await bot.instance.start(constants.Bot.token)
 
 try:
-    bot.instance = Bot.create()
-    asyncio.run(main(bot.instance))
+    asyncio.run(main())
 except StartupError as e:
     message = "Unknown Startup Error Occurred."
     if isinstance(e.exception, (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError)):
