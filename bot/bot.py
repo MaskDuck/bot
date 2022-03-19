@@ -16,7 +16,6 @@ from bot.async_stats import AsyncStatsClient
 from bot.log import get_logger
 
 log = get_logger('bot')
-LOCALHOST = "127.0.0.1"
 
 
 class StartupError(Exception):
@@ -46,19 +45,10 @@ class Bot(commands.Bot):
 
         self._connector = None
         self._resolver = None
-        self._statsd_timerhandle: asyncio.TimerHandle = None
-        self._guild_available = asyncio.Event()
+        self._statsd_timerhandle: Optional[asyncio.TimerHandle] = None
+        self._guild_available: Optional[asyncio.Event] = None
 
-        statsd_url = constants.Stats.statsd_host
-
-        if constants.DEBUG_MODE:
-            # Since statsd is UDP, there are no errors for sending to a down port.
-            # For this reason, setting the statsd host to 127.0.0.1 for development
-            # will effectively disable stats.
-            statsd_url = LOCALHOST
-
-        self.stats = AsyncStatsClient(self.loop, LOCALHOST)
-        self._connect_statsd(statsd_url)
+        self.stats: Optional[AsyncStatsClient] = None
 
     def _connect_statsd(self, statsd_url: str, retry_after: int = 2, attempt: int = 1) -> None:
         """Callback used to retry a connection to statsd if it should fail."""
@@ -130,7 +120,7 @@ class Bot(commands.Bot):
             intents=intents,
         )
 
-    def load_extensions(self) -> None:
+    async def load_extensions(self) -> None:
         """Load all enabled extensions."""
         # Must be done here to avoid a circular import.
         from bot.utils.extensions import EXTENSIONS
@@ -140,11 +130,11 @@ class Bot(commands.Bot):
             extensions.remove("bot.exts.help_channels")
 
         for extension in extensions:
-            self.load_extension(extension)
+            await self.load_extension(extension)
 
-    def add_cog(self, cog: commands.Cog) -> None:
+    async def add_cog(self, cog: commands.Cog) -> None:
         """Adds a "cog" to the bot and logs the operation."""
-        super().add_cog(cog)
+        await super().add_cog(cog)
         log.info(f"Cog loaded: {cog.qualified_name}")
 
     def add_command(self, command: commands.Command) -> None:
@@ -176,11 +166,11 @@ class Bot(commands.Bot):
         # Done before super().close() to allow tasks finish before the HTTP session closes.
         for ext in list(self.extensions):
             with suppress(Exception):
-                self.unload_extension(ext)
+                await self.unload_extension(ext)
 
         for cog in list(self.cogs):
             with suppress(Exception):
-                self.remove_cog(cog)
+                await self.remove_cog(cog)
 
         # Wait until all tasks that have to be completed before bot is closing is done
         log.trace("Waiting for tasks before closing.")
@@ -223,40 +213,19 @@ class Bot(commands.Bot):
             "updated_at": item["updated_at"],
         }
 
-    async def login(self, *args, **kwargs) -> None:
-        """Re-create the connector and set up sessions before logging into Discord."""
-        # Use asyncio for DNS resolution instead of threads so threads aren't spammed.
-        self._resolver = aiohttp.AsyncResolver()
-
-        # Use AF_INET as its socket family to prevent HTTPS related problems both locally
-        # and in production.
-        self._connector = aiohttp.TCPConnector(
-            resolver=self._resolver,
-            family=socket.AF_INET,
-        )
-
-        # Client.login() will call HTTPClient.static_login() which will create a session using
-        # this connector attribute.
-        self.http.connector = self._connector
-
-        self.http_session = aiohttp.ClientSession(connector=self._connector)
-        self.api_client = api.APIClient(connector=self._connector)
-
+    async def setup_hook(self) -> None:
+        """Default Async initialisation method for Discord.py."""
         if self.redis_session.closed:
             # If the RedisSession was somehow closed, we try to reconnect it
             # here. Normally, this shouldn't happen.
             await self.redis_session.connect()
 
-        try:
-            await self.ping_services()
-        except Exception as e:
-            raise StartupError(e)
-
         # Build the FilterList cache
         await self.cache_filter_list_data()
 
         await self.stats.create_socket()
-        await super().login(*args, **kwargs)
+
+        await self.load_extensions()
 
     async def on_guild_available(self, guild: discord.Guild) -> None:
         """
